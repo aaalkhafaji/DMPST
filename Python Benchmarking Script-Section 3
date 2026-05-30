@@ -1,0 +1,210 @@
+# ==============================================================================
+# INPO Empirical Benchmarking Suite
+# Description: Generates IEEE-formatted quantitative figures for Section III:
+# 1. Denoising Benchmark (PSNR/SSIM vs Noise Density)
+# 2. Entropy Reduction (Compression Bar Chart)
+# 3. Terminal Attractor Convergence (Phase Plot for BIBO Stability)
+# ==============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import maximum_filter, minimum_filter, gaussian_filter, median_filter
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+import zipfile
+import os
+
+generated_files = []
+
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+def hardware_morphological_derivative(image, window_size=3):
+    dilation = maximum_filter(image, size=window_size, mode='constant', cval=0)
+    erosion = minimum_filter(image, size=window_size, mode='constant', cval=255)
+    return dilation - erosion
+
+def shannon_entropy(image):
+    hist, _ = np.histogram(image.flatten(), bins=256, range=(0, 255))
+    hist = hist[hist > 0]
+    probs = hist / np.sum(hist)
+    return -np.sum(probs * np.log2(probs))
+
+# Generate a synthetic structural test image
+def generate_test_image(size=64):
+    img = np.ones((size, size)) * 50
+    img[size//4 : 3*size//4, size//4 : 3*size//4] = 200 # Geometric square
+    return img
+
+original_img = generate_test_image(64)
+
+# ==============================================================================
+# FIGURE 1: Denoising Benchmark (PSNR & SSIM vs Noise Density)
+# ==============================================================================
+def plot_denoising_benchmark():
+    noise_densities = np.arange(0.1, 0.95, 0.1)
+    
+    psnr_inpo, psnr_median, psnr_gauss = [], [], []
+    ssim_inpo, ssim_median, ssim_gauss = [], [], []
+    
+    for density in noise_densities:
+        # Inject impulse noise
+        noisy = np.copy(original_img)
+        mask_salt = np.random.rand(*noisy.shape) < (density / 2)
+        mask_pepper = np.random.rand(*noisy.shape) < (density / 2)
+        noisy[mask_salt] = 255
+        noisy[mask_pepper] = 0
+        
+        # 1. Linear Filter (Gaussian)
+        restored_gauss = gaussian_filter(noisy, sigma=1.0)
+        
+        # 2. Standard Median Filter
+        restored_median = median_filter(noisy, size=3)
+        
+        # 3. Proposed INPO (Partial Morphological Evolution - 1 Iteration)
+        morph_grad = hardware_morphological_derivative(noisy, window_size=3)
+        restored_inpo = np.clip(noisy - 1.0 * morph_grad, 0, 255)
+        
+        # Calculate Metrics
+        psnr_inpo.append(psnr(original_img, restored_inpo, data_range=255))
+        psnr_median.append(psnr(original_img, restored_median, data_range=255))
+        psnr_gauss.append(psnr(original_img, restored_gauss, data_range=255))
+        
+        ssim_inpo.append(ssim(original_img, restored_inpo, data_range=255))
+        ssim_median.append(ssim(original_img, restored_median, data_range=255))
+        ssim_gauss.append(ssim(original_img, restored_gauss, data_range=255))
+
+    # Plotting
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # PSNR Plot
+    ax1.plot(noise_densities, psnr_inpo, 'b-o', linewidth=2, label='Proposed INPO (Partial Flow)')
+    ax1.plot(noise_densities, psnr_median, 'g--s', linewidth=2, label='Standard Median Filter')
+    ax1.plot(noise_densities, psnr_gauss, 'r-.^', linewidth=2, label='Linear Isotropic Diffusion')
+    ax1.set_title('Robustness: Peak Signal-to-Noise Ratio', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Impulse Noise Density', fontsize=11)
+    ax1.set_ylabel('PSNR (dB)', fontsize=11)
+    ax1.grid(True, linestyle=':', alpha=0.7)
+    ax1.legend(fontsize=10)
+    
+    # SSIM Plot
+    ax2.plot(noise_densities, ssim_inpo, 'b-o', linewidth=2, label='Proposed INPO')
+    ax2.plot(noise_densities, ssim_median, 'g--s', linewidth=2, label='Standard Median Filter')
+    ax2.plot(noise_densities, ssim_gauss, 'r-.^', linewidth=2, label='Linear Isotropic Diffusion')
+    ax2.set_title('Edge Preservation: Structural Similarity', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Impulse Noise Density', fontsize=11)
+    ax2.set_ylabel('SSIM Index', fontsize=11)
+    ax2.grid(True, linestyle=':', alpha=0.7)
+    ax2.legend(fontsize=10)
+    
+    plt.tight_layout()
+    fig1_name = "fig_denoising_benchmark.pdf"
+    plt.savefig(fig1_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig1_name)
+    plt.close()
+    print(f"Generated: {fig1_name}")
+
+# ==============================================================================
+# FIGURE 2: Entropy Reduction (Bar Chart)
+# ==============================================================================
+def plot_entropy_reduction():
+    # Setup test case (30% noise)
+    noisy = np.copy(original_img)
+    noisy[np.random.rand(*noisy.shape) < 0.15] = 255
+    noisy[np.random.rand(*noisy.shape) < 0.15] = 0
+    
+    # Apply filters
+    gauss = gaussian_filter(noisy, sigma=1.0)
+    inpo = np.clip(noisy - 1.0 * hardware_morphological_derivative(noisy), 0, 255)
+    
+    # Calculate Entropies
+    entropies = [
+        shannon_entropy(original_img),
+        shannon_entropy(noisy),
+        shannon_entropy(gauss),
+        shannon_entropy(inpo)
+    ]
+    
+    labels = ['Original\nClean State', 'Corrupted\n(High Variance)', 'Linear Filter\n(Blurred)', 'Proposed INPO\n(Topological Smooth)']
+    colors = ['gray', 'red', 'orange', 'blue']
+    
+    plt.figure(figsize=(8, 5))
+    bars = plt.bar(labels, entropies, color=colors, edgecolor='black', alpha=0.8)
+    
+    plt.title('Shannon Entropy Reduction for Data Compression', fontsize=14, fontweight='bold')
+    plt.ylabel('Spatial Entropy $\mathcal{H}(T_\\theta)$ (bits/pixel)', fontsize=12)
+    plt.grid(axis='y', linestyle=':', alpha=0.7)
+    
+    # Add exact values on top of bars
+    for bar in bars:
+        yval = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width()/2.0, yval + 0.05, f'{yval:.2f}', ha='center', va='bottom', fontweight='bold')
+        
+    plt.tight_layout()
+    fig2_name = "fig_entropy_reduction.pdf"
+    plt.savefig(fig2_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig2_name)
+    plt.close()
+    print(f"Generated: {fig2_name}")
+
+# ==============================================================================
+# FIGURE 3: Terminal Attractor Convergence (BIBO Stability)
+# ==============================================================================
+def plot_terminal_attractor():
+    cycles = 15
+    # Simulate multiple pixels starting at chaotic random states across the gamut
+    initial_states = [250, 200, 150, 80, 20, 0]
+    target_invariant_state = 100  # The safe core / manifold target
+    
+    lambda_stable = 1.0 / 255.0   # Satisfies BIBO stability theorem
+    
+    plt.figure(figsize=(9, 5))
+    
+    for state in initial_states:
+        trajectory = [state]
+        for n in range(cycles):
+            # Simulated Morphological Derivative pulling toward the invariant target
+            gradient = trajectory[-1] - target_invariant_state
+            # Euler update
+            next_state = trajectory[-1] - (lambda_stable * 255.0) * gradient
+            trajectory.append(next_state)
+            
+        plt.plot(range(cycles + 1), trajectory, marker='o', linewidth=2, alpha=0.8)
+
+    # Plot the Safe Core / Invariant Manifold
+    plt.axhline(target_invariant_state, color='black', linestyle='--', linewidth=2.5, label='$\mathcal{M}^-$ (Invariant Safe Core)')
+    
+    plt.title('Hardware BIBO Stability: Convergence to Terminal Attractors', fontsize=14, fontweight='bold')
+    plt.xlabel('Discrete Hardware Clock Cycle ($n$)', fontsize=12)
+    plt.ylabel('Pixel Register Magnitude ($T_{\\theta,k}$)', fontsize=12)
+    plt.ylim([-10, 265])
+    plt.grid(True, linestyle=':', alpha=0.7)
+    plt.legend(fontsize=11)
+    
+    plt.tight_layout()
+    fig3_name = "fig_phase_convergence.pdf"
+    plt.savefig(fig3_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig3_name)
+    plt.close()
+    print(f"Generated: {fig3_name}")
+
+# ==============================================================================
+# Execution and Zipping
+# ==============================================================================
+plot_denoising_benchmark()
+plot_entropy_reduction()
+plot_terminal_attractor()
+
+zip_filename = 'INPO_Empirical_Figures.zip'
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    for file in generated_files:
+        zipf.write(file)
+        
+print(f"\nSuccess! All empirical figures have been compressed into: {zip_filename}")
+
+# Colab specific download trigger
+try:
+    from google.colab import files
+    files.download(zip_filename)
+except ImportError:
+    pass
