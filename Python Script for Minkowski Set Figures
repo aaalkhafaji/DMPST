@@ -1,0 +1,139 @@
+# ==============================================================================
+# INPO Minkowski Operations Visualization Suite
+# Generates Figures for Section II.G and II.H:
+# 1. Morphological Tolerance Sets and Gamut Boundaries (2D)
+# 2. Algebraic Composability via Minkowski Sum (3D)
+# ==============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import zipfile
+
+generated_files = []
+
+# ==============================================================================
+# FIGURE 1: Tolerance Tubes and Gamut Safe Core (Section II.G)
+# ==============================================================================
+def plot_tolerance_gamut():
+    fig, ax = plt.subplots(figsize=(8, 6))
+    
+    # Define Hardware Gamut [0, 255]
+    gamut_max = 255
+    ax.plot([0, gamut_max, gamut_max, 0, 0], [0, 0, gamut_max, gamut_max, 0], 
+            color='black', linewidth=3, label='Hardware Gamut $\mathcal{G} = [0, 255]^2$')
+    
+    # Define Invariant Manifold (A fixed channel state)
+    invariant_val = 200
+    ax.axhline(invariant_val, color='blue', linestyle='--', linewidth=2, 
+               label='Strict Invariant Manifold $\mathcal{M}_{\mathcal{K}}$')
+    
+    # 1. Dilation: Morphological Tolerance Tube (M+)
+    epsilon = 15 # Noise tolerance
+    ax.fill_between([0, gamut_max], invariant_val - epsilon, invariant_val + epsilon, 
+                    color='blue', alpha=0.15, label='Tolerance Tube $\mathcal{M}^+$ (Dilation)')
+    
+    # 2. Erosion: Safe Core (M-) preventing overflow
+    lambda_max = 40 # Max derivative step
+    safe_core_max = gamut_max - lambda_max
+    
+    # Draw Safe core boundary
+    ax.axhspan(0, safe_core_max, color='green', alpha=0.1, label='Safe Core $\mathcal{M}^-$ (Erosion)')
+    ax.axhline(safe_core_max, color='green', linestyle=':', linewidth=2, label='Erosion Boundary ($\Lambda_{max}$ margin)')
+    
+    # Draw an example safe step
+    ax.annotate('', xy=(150, safe_core_max + lambda_max), xytext=(150, safe_core_max),
+                arrowprops=dict(facecolor='red', shrink=0, width=2, headwidth=8),)
+    ax.text(152, safe_core_max + (lambda_max/2), 'Max Step $\Lambda_{max}$', color='red', fontweight='bold')
+    
+    ax.set_xlim([-10, 270])
+    ax.set_ylim([-10, 270])
+    ax.set_title("Minkowski Operations on Hardware Gamut Boundaries", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Active Channel ($I_1$)", fontsize=12)
+    ax.set_ylabel("Fixed Channel ($I_2$)", fontsize=12)
+    ax.legend(loc='lower left', fontsize=10)
+    ax.grid(True, linestyle=':', alpha=0.6)
+    
+    plt.tight_layout()
+    fig_name = "fig_minkowski_gamut.pdf"
+    plt.savefig(fig_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig_name)
+    plt.close()
+    print(f"Generated: {fig_name}")
+
+# ==============================================================================
+# FIGURE 2: Algebraic Composability / Manifold Fusion (Section II.H)
+# ==============================================================================
+def plot_manifold_fusion():
+    fig = plt.figure(figsize=(9, 7))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Define two 1D Invariant Rays (e.g., varying R, varying B)
+    origin = np.array([50, 50, 50])
+    length = 150
+    
+    ray1_x = [origin[0], origin[0] + length]
+    ray1_y = [origin[1], origin[1]]
+    ray1_z = [origin[2], origin[2]]
+    
+    ray2_x = [origin[0], origin[0]]
+    ray2_y = [origin[1], origin[1]]
+    ray2_z = [origin[2], origin[2] + length]
+    
+    # Plot Ray 1 (M_K1)
+    ax.plot(ray1_x, ray1_y, ray1_z, color='red', linewidth=4, 
+            label='1D Manifold $\mathcal{M}_{\mathcal{K}_1}$ (Active R)')
+    
+    # Plot Ray 2 (M_K2)
+    ax.plot(ray2_x, ray2_y, ray2_z, color='blue', linewidth=4, 
+            label='1D Manifold $\mathcal{M}_{\mathcal{K}_2}$ (Active B)')
+    
+    # Minkowski Sum (Fusion Plane)
+    xx, zz = np.meshgrid(np.linspace(origin[0], origin[0] + length, 10),
+                         np.linspace(origin[2], origin[2] + length, 10))
+    yy = np.full_like(xx, origin[1])
+    
+    ax.plot_surface(xx, yy, zz, color='purple', alpha=0.3)
+    
+    # Proxy artist for the legend for the surface
+    import matplotlib.patches as mpatches
+    fusion_patch = mpatches.Patch(color='purple', alpha=0.3, label='Fusion Plane $\mathcal{M}_{fusion}$ (Minkowski Sum $\oplus$)')
+    
+    ax.set_xlim([0, 255])
+    ax.set_ylim([0, 255])
+    ax.set_zlim([0, 255])
+    
+    ax.set_xlabel('Red Channel ($I_R$)', fontweight='bold')
+    ax.set_ylabel('Green Channel ($I_G$)', fontweight='bold')
+    ax.set_zlabel('Blue Channel ($I_B$)', fontweight='bold')
+    ax.set_title('Algebraic Composability via Minkowski Addition', fontsize=14, fontweight='bold')
+    
+    handles, labels = ax.get_legend_handles_labels()
+    handles.append(fusion_patch)
+    ax.legend(handles=handles, loc='upper left')
+    
+    plt.tight_layout()
+    fig_name = "fig_manifold_fusion.pdf"
+    plt.savefig(fig_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig_name)
+    plt.close()
+    print(f"Generated: {fig_name}")
+
+# ==============================================================================
+# Execution and Zipping
+# ==============================================================================
+plot_tolerance_gamut()
+plot_manifold_fusion()
+
+zip_filename = 'INPO_Minkowski_Figures.zip'
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    for file in generated_files:
+        zipf.write(file)
+        
+print(f"\nSuccess! Figures compressed into: {zip_filename}")
+
+try:
+    from google.colab import files
+    files.download(zip_filename)
+except ImportError:
+    pass
