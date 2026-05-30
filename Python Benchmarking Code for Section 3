@@ -1,0 +1,89 @@
+# ==============================================================================
+# DPST Empirical Benchmarking Suite (PSNR, SSIM, Entropy)
+# Description: Evaluates the morphological-polynomial flow on vertical images.
+# Computes image quality metrics and generates Figure for Section III.
+# ==============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import maximum_filter, minimum_filter
+from skimage.metrics import peak_signal_noise_ratio as psnr
+from skimage.metrics import structural_similarity as ssim
+import zipfile
+
+# 1. Helper Functions
+def hardware_morphological_derivative(image_channel, window_size=3):
+    dilation = maximum_filter(image_channel, size=window_size, mode='constant', cval=0)
+    erosion = minimum_filter(image_channel, size=window_size, mode='constant', cval=255)
+    return dilation - erosion
+
+def shannon_entropy(image_channel):
+    # Calculate Shannon Entropy for compression benchmarking
+    hist, _ = np.histogram(image_channel.flatten(), bins=256, range=(0, 255))
+    hist = hist[hist > 0] # Remove zeros to avoid log(0)
+    probabilities = hist / np.sum(hist)
+    return -np.sum(probabilities * np.log2(probabilities))
+
+# 2. Generate Vertical Test Image (128 Height x 64 Width)
+height, width = 128, 64
+original = np.ones((height, width)) * 50
+original[20:108, 20:44] = 200 # Vertical geometric structure
+
+# 3. Inject Impulse Noise
+noisy = np.copy(original)
+noise_mask = np.random.rand(height, width) > 0.92
+noisy[noise_mask] = 255
+noisy[np.random.rand(height, width) < 0.05] = 0
+
+# 4. Apply Morphological-Polynomial PDE (1 Step)
+morph_grad = hardware_morphological_derivative(noisy, window_size=3)
+lambda_step = 1.0
+restored = np.clip(noisy - lambda_step * morph_grad, 0, 255)
+
+# 5. Calculate Empirical Metrics
+psnr_noisy = psnr(original, noisy, data_range=255)
+ssim_noisy = ssim(original, noisy, data_range=255)
+ent_noisy = shannon_entropy(noisy)
+
+psnr_restored = psnr(original, restored, data_range=255)
+ssim_restored = ssim(original, restored, data_range=255)
+ent_restored = shannon_entropy(restored)
+
+# 6. Visualization & Figure Generation
+fig, axes = plt.subplots(1, 3, figsize=(10, 7))
+
+# Plot 1: Original
+axes[0].imshow(original, cmap='gray', vmin=0, vmax=255)
+axes[0].set_title(f"Original Vertical Geometry\nEntropy: {shannon_entropy(original):.2f} bits", fontsize=11)
+
+# Plot 2: Noisy
+axes[1].imshow(noisy, cmap='gray', vmin=0, vmax=255)
+axes[1].set_title(f"Perturbed State\nPSNR: {psnr_noisy:.1f} dB\nSSIM: {ssim_noisy:.3f}\nEntropy: {ent_noisy:.2f} bits", fontsize=11)
+
+# Plot 3: Restored
+axes[2].imshow(restored, cmap='gray', vmin=0, vmax=255)
+axes[2].set_title(f"Morphological PDE Restoration\nPSNR: {psnr_restored:.1f} dB\nSSIM: {ssim_restored:.3f}\nEntropy: {ent_restored:.2f} bits", fontsize=11)
+
+for ax in axes:
+    ax.axis('off')
+
+plt.tight_layout()
+fig_name = "fig_empirical_benchmarks.pdf"
+plt.savefig(fig_name, format='pdf', bbox_inches='tight')
+plt.close()
+
+# 7. Zip and Download
+zip_filename = 'DPST_Empirical_Benchmarks.zip'
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    zipf.write(fig_name)
+
+print(f"Metrics Computed:")
+print(f"PSNR Improvement: +{psnr_restored - psnr_noisy:.2f} dB")
+print(f"SSIM Improvement: +{ssim_restored - ssim_noisy:.3f}")
+print(f"Entropy Reduction: {ent_noisy - ent_restored:.2f} bits")
+
+try:
+    from google.colab import files
+    files.download(zip_filename)
+except ImportError:
+    pass
