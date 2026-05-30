@@ -1,0 +1,132 @@
+# ==============================================================================
+# DPST Partial Morphological Evolution Simulation Suite
+# Description: Generates 3D theoretical trajectory plots and 2D vertical image 
+# proofs for Partial Evolution and Color-Bleeding prevention.
+# ==============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import maximum_filter, minimum_filter
+import zipfile
+import os
+
+# Create a list to track generated files
+generated_files = []
+
+# ==============================================================================
+# Helper Function: Hardware Morphological Derivative
+# ==============================================================================
+def hardware_morphological_derivative(image_channel, window_size=3):
+    dilation = maximum_filter(image_channel, size=window_size, mode='constant', cval=0)
+    erosion = minimum_filter(image_channel, size=window_size, mode='constant', cval=255)
+    return dilation - erosion
+
+# ==============================================================================
+# FIGURE 1: 3D Theoretical Trajectories (Theorem II.F)
+# ==============================================================================
+def plot_3d_manifolds():
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    # Initial perturbed state for a single pixel
+    start_pt = np.array([250, 250, 250])
+    target_pt = np.array([50, 50, 50]) # Restored background state
+    
+    steps = 10
+    
+    # 1. Unconstrained 3D Flow (All channels active)
+    x3 = np.linspace(start_pt[0], target_pt[0], steps)
+    y3 = np.linspace(start_pt[1], target_pt[1], steps)
+    z3 = np.linspace(start_pt[2], target_pt[2], steps)
+    ax.plot(x3, y3, z3, marker='o', color='gray', linestyle=':', label='Unconstrained 3D Flow\n(All active)')
+
+    # 2. 2D Hyperplane Flow (Fix R=250. Evolve G, B)
+    x2 = np.full(steps, start_pt[0])
+    y2 = np.linspace(start_pt[1], target_pt[1], steps)
+    z2 = np.linspace(start_pt[2], target_pt[2], steps)
+    ax.plot(x2, y2, z2, marker='s', color='blue', linewidth=2, label='2D Hyperplane Evolution\n(R Fixed)')
+    
+    # 3. 1D Affine Ray Flow (Fix R=250, G=250. Evolve B)
+    x1 = np.full(steps, start_pt[0])
+    y1 = np.full(steps, start_pt[1])
+    z1 = np.linspace(start_pt[2], target_pt[2], steps)
+    ax.plot(x1, y1, z1, marker='^', color='red', linewidth=3, label='1D Affine Ray Evolution\n(R, G Fixed)')
+
+    # Formatting the 3D plot
+    ax.set_xlabel('Red Channel State ($I_R$)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Green Channel State ($I_G$)', fontsize=12, fontweight='bold')
+    ax.set_zlabel('Blue Channel State ($I_B$)', fontsize=12, fontweight='bold')
+    ax.set_xlim([0, 255]); ax.set_ylim([0, 255]); ax.set_zlim([0, 255])
+    ax.set_title("Discrete Pixel Trajectories in $\mathbb{Z}^3$ Color Space", fontsize=14)
+    ax.legend(loc='upper left', fontsize=10)
+    
+    fig1_name = "fig_3d_color_manifolds.pdf"
+    plt.savefig(fig1_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig1_name)
+    plt.close()
+    print(f"Generated: {fig1_name}")
+
+# ==============================================================================
+# FIGURE 2: 1D Flow Zero Color-Bleeding Proof (Vertical Image)
+# ==============================================================================
+def plot_zero_color_bleed():
+    # Create a vertical base image (64 height x 32 width)
+    img_height, img_width = 64, 32
+    original_img = np.ones((img_height, img_width, 3), dtype=float) * 50
+    
+    # Add a prominent structural feature: A yellow vertical bar (Red=250, Green=250, Blue=50)
+    original_img[10:54, 10:22, 0] = 250 # Red
+    original_img[10:54, 10:22, 1] = 250 # Green
+    
+    # Inject heavy impulse noise exclusively into the Blue channel
+    noisy_img = np.copy(original_img)
+    noise_mask = np.random.rand(img_height, img_width) > 0.90
+    noisy_img[noise_mask, 2] = 255 # Max blue noise
+    
+    # Apply Partial Morphological Evolution (Fix R and G, Evolve B)
+    # Using 1 forward Euler step with max lambda
+    restored_img = np.copy(noisy_img)
+    morph_deriv_B = hardware_morphological_derivative(noisy_img[:, :, 2], window_size=3)
+    restored_img[:, :, 2] = np.clip(restored_img[:, :, 2] - 1.0 * morph_deriv_B, 0, 255)
+    
+    # Visualization setup
+    fig, axes = plt.subplots(1, 3, figsize=(10, 6))
+    
+    axes[0].imshow(original_img.astype(np.uint8))
+    axes[0].set_title("Original Structure\n(Vertical Geometry)", fontsize=12)
+    
+    axes[1].imshow(noisy_img.astype(np.uint8))
+    axes[1].set_title("Blue Channel Perturbation\n(Impulse Noise)", fontsize=12)
+    
+    axes[2].imshow(restored_img.astype(np.uint8))
+    axes[2].set_title("Restored (1D Partial Flow)\nZero R/G Bleeding", fontsize=12)
+    
+    for ax in axes:
+        ax.axis('off')
+        
+    plt.tight_layout()
+    fig2_name = "fig_1d_color_bleed_proof.pdf"
+    plt.savefig(fig2_name, format='pdf', bbox_inches='tight')
+    generated_files.append(fig2_name)
+    plt.close()
+    print(f"Generated: {fig2_name}")
+
+# ==============================================================================
+# Execute and Zip
+# ==============================================================================
+plot_3d_manifolds()
+plot_zero_color_bleed()
+
+zip_filename = 'DPST_Invariant_Manifolds.zip'
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    for file in generated_files:
+        zipf.write(file)
+        
+print(f"\nSuccess! All figures have been compressed into: {zip_filename}")
+
+try:
+    from google.colab import files
+    files.download(zip_filename)
+    print("Initiating download for Google Colab...")
+except ImportError:
+    print(f"Run complete. Find '{zip_filename}' in your current working directory.")
