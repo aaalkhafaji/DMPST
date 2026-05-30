@@ -1,0 +1,52 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import maximum_filter, minimum_filter
+
+# 1. Create a 2D pixel grid (8x8 block of a single color channel)
+# Background intensity is 50
+pixels = np.ones((8, 8)) * 50
+
+# Add a central "object" (e.g., a structural edge) with intensity 200
+pixels[2:6, 2:6] = 200  
+
+# Add a single spike of impulse noise (e.g., salt noise) with intensity 250
+pixels[1, 6] = 250      
+
+# Define the structuring element size (3x3 hardware sliding window)
+window_size = 3
+
+# 2. Compute Dilation (Local Maximum) - Expands bright regions
+dilation = maximum_filter(pixels, size=window_size, mode='constant', cval=0)
+
+# 3. Compute Erosion (Local Minimum) - Shrinks bright regions
+erosion = minimum_filter(pixels, size=window_size, mode='constant', cval=255)
+
+# 4. Compute the Morphological Partial Derivative (Gradient)
+morph_gradient = dilation - erosion
+
+# --- Visualization ---
+fig, axes = plt.subplots(1, 4, figsize=(18, 5))
+titles = [
+    'Original Pixels\n(Object + Noise)', 
+    'Dilation ($\\delta_S$)\nLocal Max Filter', 
+    'Erosion ($\\varepsilon_S$)\nLocal Min Filter', 
+    'Morphological Derivative\n$\\partial^{morph} = \\delta_S - \\varepsilon_S$'
+]
+images = [pixels, dilation, erosion, morph_gradient]
+
+for ax, img, title in zip(axes, images, titles):
+    # Display the grid as an image matrix
+    cax = ax.matshow(img, cmap='magma', vmin=0, vmax=255)
+    ax.set_title(title, pad=15, fontsize=12, fontweight='bold')
+    ax.set_xticks([]); ax.set_yticks([]) # Hide axes ticks for cleaner look
+    
+    # Overlay the exact numerical pixel values
+    for (i, j), val in np.ndenumerate(img):
+        # Choose text color for readability based on background brightness
+        text_color = 'white' if val < 150 else 'black'
+        ax.text(j, i, f'{int(val)}', ha='center', va='center', 
+                color=text_color, fontsize=10, fontweight='bold')
+
+plt.tight_layout()
+# plt.savefig('morphological_pixels.pdf', format='pdf', bbox_inches='tight')
+plt.show()
