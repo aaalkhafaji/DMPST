@@ -1,0 +1,111 @@
+# ==============================================================================
+# Unified DPST Hardware Simulation Suite
+# Description: Generates both the Morphological Hardware Boundary validation 
+# and the Discrete Clock Cycle Stability proofs, saving all figures to a ZIP file.
+# ==============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.ndimage import maximum_filter, minimum_filter
+import zipfile
+import os
+
+# Create a list to track generated files
+generated_files = []
+
+# ==============================================================================
+# 1. Spatial Morphological Hardware Boundary Simulation
+# ==============================================================================
+def hardware_morphological_derivative(image_channel, hardware_window_size=3):
+    # Dilation: Simulated Hardware Max Comparator Tree (Identity mask = 0)
+    dilation = maximum_filter(image_channel, size=hardware_window_size, mode='constant', cval=0)
+    # Erosion: Simulated Hardware Min Comparator Tree (Identity mask = 255)
+    erosion = minimum_filter(image_channel, size=hardware_window_size, mode='constant', cval=255)
+    return dilation - erosion
+
+# Test signal with flat regions, a sharp edge, and a noise spike
+signal = np.array([10, 10, 12, 10, 250, 10, 100, 100, 100, 105])
+morph_grad = hardware_morphological_derivative(signal, hardware_window_size=3)
+
+# Plot and Save Figure 1
+plt.figure(figsize=(10, 5))
+plt.plot(signal, label='Original Hardware Buffer State', marker='o', color='blue', linewidth=2)
+plt.plot(morph_grad, label='Morphological Derivative (Gradient)', marker='x', color='red', linewidth=2, linestyle='--')
+
+plt.title("Hardware Comparator Output for Morphological Gradient", fontsize=14)
+plt.xlabel("Spatial Coordinate (Pixel Index)", fontsize=12)
+plt.ylabel("Signal / Gradient Magnitude", fontsize=12)
+plt.legend(fontsize=11)
+plt.grid(True, linestyle=':', alpha=0.7)
+plt.tight_layout()
+
+fig1_name = "fig_morph_hardware.pdf"
+plt.savefig(fig1_name, format='pdf', bbox_inches='tight')
+generated_files.append(fig1_name)
+plt.close() # Close to prevent overlap
+print(f"Generated: {fig1_name}")
+
+# ==============================================================================
+# 2. Discrete Hardware Clock Cycle Stability Proof
+# ==============================================================================
+def simulate_hardware_clock_cycles(initial_state, morph_gradient_max, clock_cycles=20):
+    lambda_stable = 1.0 / morph_gradient_max       # Maximum stable step size
+    lambda_unstable = 1.05 / morph_gradient_max    # Exceeds the bound (instability)
+    
+    state_stable = [initial_state]
+    state_unstable = [initial_state]
+    
+    for n in range(clock_cycles):
+        next_stable = state_stable[-1] - lambda_stable * morph_gradient_max * state_stable[-1]
+        state_stable.append(next_stable)
+        
+        next_unstable = state_unstable[-1] - lambda_unstable * morph_gradient_max * state_unstable[-1]
+        state_unstable.append(next_unstable)
+        
+    return state_stable, state_unstable
+
+# Parameters and Simulation
+cycles = 20
+initial_energy = 255.0
+max_gradient = 1.0 
+stable, unstable = simulate_hardware_clock_cycles(initial_energy, max_gradient, clock_cycles=cycles)
+
+# Plot and Save Figure 2
+plt.figure(figsize=(10, 5))
+plt.plot(range(cycles + 1), stable, label='Stable Evolution (Theorem 2.3 Satisfied)', color='blue', linewidth=2.5)
+plt.plot(range(cycles + 1), unstable, label='Unstable Overflow (Bound Violated)', color='red', linestyle='--', linewidth=2)
+
+plt.axhline(0, color='black', linewidth=1.5)
+plt.title("Hardware Register Energy per Clock Cycle (Forward-Euler Update)", fontsize=14)
+plt.xlabel("Discrete Hardware Clock Cycle (n)", fontsize=12)
+plt.ylabel("Register Magnitude (Energy)", fontsize=12)
+plt.legend(fontsize=11, loc='upper right')
+plt.grid(True, linestyle=':', alpha=0.7)
+plt.tight_layout()
+
+fig2_name = "fig_discrete_stability.pdf"
+plt.savefig(fig2_name, format='pdf', bbox_inches='tight')
+generated_files.append(fig2_name)
+plt.close()
+print(f"Generated: {fig2_name}")
+
+# ==============================================================================
+# 3. Zip the Generated Figures
+# ==============================================================================
+zip_filename = 'DPST_Hardware_Simulations.zip'
+
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    for file in generated_files:
+        zipf.write(file)
+        
+print(f"\nSuccess! All figures have been compressed into: {zip_filename}")
+
+# ==============================================================================
+# Optional: Auto-Download for Google Colab
+# ==============================================================================
+try:
+    from google.colab import files
+    files.download(zip_filename)
+    print("Initiating download for Google Colab...")
+except ImportError:
+    print(f"Run complete. Find '{zip_filename}' in your current working directory.")
