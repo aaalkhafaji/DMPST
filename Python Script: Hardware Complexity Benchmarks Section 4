@@ -1,0 +1,70 @@
+# ==============================================================================
+# MPO Hardware Complexity Benchmarks (REVISED)
+# Fixes text overlap by enforcing strict y-axis ceilings and layout margins.
+# ==============================================================================
+
+import numpy as np
+import matplotlib.pyplot as plt
+import zipfile
+
+# Define benchmark data for a standard 3x3 kernel operation
+methods = ['Spatial Convolution\n(Linear Filter)', 'Recursive PDE\n(e.g., Total Variation)', 'Proposed MPO\n(Partial Evolution)']
+
+# 1. MAC Operations per Pixel (Arithmetic Complexity)
+macs_per_pixel = [9, 90, 1] 
+
+# 2. Pipeline Latency (Clock Cycles per Pixel Block)
+latency_cycles = [1, 10, 1] 
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+# Plot 1: MAC Operations
+colors_mac = ['gray', 'red', 'blue']
+bars1 = ax1.bar(methods, macs_per_pixel, color=colors_mac, edgecolor='black', alpha=0.8)
+ax1.set_title('Arithmetic Complexity per Pixel', fontsize=12, fontweight='bold')
+ax1.set_ylabel('Required MAC Operations', fontsize=11)
+ax1.set_yscale('log')
+ax1.grid(axis='y', linestyle=':', alpha=0.7)
+
+# FIX: Explicitly raise the ceiling on the log scale so text doesn't hit the top
+ax1.set_ylim(0.5, 400) 
+
+for bar in bars1:
+    yval = bar.get_height()
+    # Add text safely above the bar
+    ax1.text(bar.get_x() + bar.get_width()/2.0, yval * 1.3, f'{int(yval)}', ha='center', va='bottom', fontweight='bold')
+
+# Plot 2: Processing Latency
+colors_lat = ['gray', 'red', 'blue']
+bars2 = ax2.bar(methods, latency_cycles, color=colors_lat, edgecolor='black', alpha=0.8)
+ax2.set_title('Pipeline Latency (Temporal Dependencies)', fontsize=12, fontweight='bold')
+ax2.set_ylabel('Iterations / Clock Cycles', fontsize=11)
+ax2.grid(axis='y', linestyle=':', alpha=0.7)
+
+# FIX: Explicitly raise the ceiling on the linear scale
+ax2.set_ylim(0, 13)
+
+for bar in bars2:
+    yval = bar.get_height()
+    label = f'{int(yval)} (Static)' if yval == 1 else f'~{int(yval)} (Variable)'
+    ax2.text(bar.get_x() + bar.get_width()/2.0, yval + 0.4, label, ha='center', va='bottom', fontweight='bold')
+
+# FIX: Use 'rect' to reserve the top 10% of the figure strictly for the master title
+plt.suptitle('Hardware Resource Utilization (3x3 Structuring Element)', fontsize=14, fontweight='bold')
+plt.tight_layout(rect=[0, 0, 1, 0.90])
+
+fig_name = "fig_hardware_complexity.pdf"
+plt.savefig(fig_name, format='pdf', bbox_inches='tight')
+plt.close()
+
+# Zip and download
+zip_filename = 'MPO_Hardware_Figures.zip'
+with zipfile.ZipFile(zip_filename, 'w') as zipf:
+    zipf.write(fig_name)
+
+print(f"Generated: {fig_name} (Overlap issues resolved)")
+try:
+    from google.colab import files
+    files.download(zip_filename)
+except ImportError:
+    pass
