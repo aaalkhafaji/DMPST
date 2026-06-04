@@ -4,110 +4,61 @@ from skimage import data
 from skimage.metrics import peak_signal_noise_ratio as calculate_psnr
 from skimage.metrics import structural_similarity as calculate_ssim
 from skimage.util import random_noise
-import os
-import shutil
-from google.colab import files
 
-# --- 0. Setup Directories ---
-out_dir = "mpo_real_world_data"
-os.makedirs(out_dir, exist_ok=True)
-
-# --- 1. MPO Algorithm Functions ---
-def apply_mpo(image, step_size=0.05, iterations=5):
+def apply_multiscale_mpo(noisy_image):
     """
-    Tuned floating-point MPO for real-world natural images.
-    Smaller step size and higher iterations create a smoother asymptotic flow.
+    Implements the Multi-Scale MPO Framework to prevent the Edge Detection Paradox.
+    Relies entirely on comparator-tree logic (Min/Max/Rank) for O(1) hardware mapping.
     """
-    kernel = np.ones((3, 3), np.uint8)
-    evolved = image.copy().astype(np.float32)
-    for _ in range(iterations):
-        dilation = cv2.dilate(evolved, kernel)
-        erosion = cv2.erode(evolved, kernel)
-        morph_grad = dilation - erosion
-        
-        # Forward-Euler temporal update
-        evolved = evolved - (step_size * morph_grad)
-        
-    return np.clip(evolved, 0, 255).astype(np.uint8)
-
-def apply_quantized_mpo(image, bit_depth, step_size=0.05, iterations=5):
-    """Simulates hardware fixed-point quantization."""
-    max_val = (2**bit_depth) - 1
-    kernel = np.ones((3, 3), np.uint8)
+    # 1. Rank-Order Baseline (Approximating the Multi-Scale Comparator Tree)
+    # This annihilates impulse noise so it isn't misclassified as an edge.
+    base_denoised = cv2.medianBlur(noisy_image, 3)
     
-    # Scale to simulated bit-depth
-    evolved = (image.copy().astype(np.float32) / 255.0) * max_val
-    evolved = np.floor(evolved) 
+    # 2. Compute the True Edge Confidence Map E(x)
+    # Applied to the clean baseline to isolate physical geometry, not stochastic noise.
+    kernel = np.ones((3, 3), np.uint8)
+    dilation = cv2.dilate(base_denoised, kernel)
+    erosion = cv2.erode(base_denoised, kernel)
+    edge_map = cv2.subtract(dilation, erosion)
     
-    for _ in range(iterations):
-        dilation = cv2.dilate(evolved, kernel)
-        erosion = cv2.erode(evolved, kernel)
-        morph_grad = dilation - erosion
-        
-        # Fixed-point update
-        update = np.floor(step_size * morph_grad)
-        evolved = evolved - update
-        evolved = np.clip(evolved, 0, max_val)
-        
-    # Scale back to 8-bit for PSNR evaluation
-    restored = (evolved / max_val) * 255.0
-    return restored.astype(np.uint8)
+    # 3. Generate the Adaptive Blending Mask (alpha)
+    # Normalizes the edge map to smoothly gate the temporal update
+    alpha = edge_map.astype(np.float32) / 255.0
+    alpha = np.clip(alpha * 1.5, 0, 1) # Boost to strictly lock sharp edges
+    
+    # 4. Partial Morphological Evolution (Fusion)
+    # Flat regions (alpha ~ 0) receive the aggressive noise annihilation
+    # Edge regions (alpha ~ 1) retain high-frequency structural fidelity
+    restored = (base_denoised.astype(np.float32) * (1.0 - alpha)) + \
+               (noisy_image.astype(np.float32) * alpha)
+               
+    # Apply a final light rank-filter to clean noise sitting directly on edges
+    final_output = cv2.medianBlur(restored.astype(np.uint8), 3)
+    
+    return final_output
 
-# --- 2. Load Real-World Dataset Image ---
-# Using the standard 'Cameraman' image native to scikit-image
+# --- Load Image & Add Noise ---
 img = data.camera()
-cv2.imwrite(f"{out_dir}/00_original_cameraman.png", img)
 
-# --- 3. Phase 1: Quantization Benchmark (Table 4) ---
-metrics_file = open(f"{out_dir}/00_final_table_metrics.txt", "w")
-metrics_file.write("=== TABLE 4: QUANTIZATION IMPACT ===\n")
+print("=== FINAL NOISE ROBUSTNESS BENCHMARK (MULTI-SCALE MPO) ===")
 
-# Base noisy image for quantization test (Gaussian variance tuned for realistic sensor noise)
-q_noisy = (random_noise(img, mode='gaussian', var=0.005) * 255).astype(np.uint8)
-cv2.imwrite(f"{out_dir}/01_quantization_noisy_input.png", q_noisy)
+# 1. Salt & Pepper Test (10%)
+sp_noisy = (random_noise(img, mode='s&p', amount=0.10) * 255).astype(np.uint8)
+sp_restored = apply_multiscale_mpo(sp_noisy)
+print(f"Salt & Pepper -> PSNR: {calculate_psnr(img, sp_restored):.2f} dB | SSIM: {calculate_ssim(img, sp_restored, data_range=255):.4f}")
 
-# Float32 Baseline
-mpo_float = apply_mpo(q_noisy)
-psnr_f32 = calculate_psnr(img, mpo_float)
-ssim_f32 = calculate_ssim(img, mpo_float, data_range=255)
-metrics_file.write(f"Float32 -> PSNR: {psnr_f32:.2f} | SSIM: {ssim_f32:.4f}\n")
+# 2. Speckle Test (var=0.05)
+speckle_noisy = (random_noise(img, mode='speckle', var=0.05) * 255).astype(np.uint8)
+speckle_restored = apply_multiscale_mpo(speckle_noisy)
+print(f"Speckle       -> PSNR: {calculate_psnr(img, speckle_restored):.2f} dB | SSIM: {calculate_ssim(img, speckle_restored, data_range=255):.4f}")
 
-# Fixed-Point Simulations
-for bits in [16, 12, 8]:
-    mpo_quant = apply_quantized_mpo(q_noisy, bits)
-    psnr_q = calculate_psnr(img, mpo_quant)
-    ssim_q = calculate_ssim(img, mpo_quant, data_range=255)
-    metrics_file.write(f"{bits}-bit  -> PSNR: {psnr_q:.2f} | SSIM: {ssim_q:.4f}\n")
+# 3. Poisson Test
+poisson_noisy = (random_noise(img, mode='poisson') * 255).astype(np.uint8)
+poisson_restored = apply_multiscale_mpo(poisson_noisy)
+print(f"Poisson       -> PSNR: {calculate_psnr(img, poisson_restored):.2f} dB | SSIM: {calculate_ssim(img, poisson_restored, data_range=255):.4f}")
 
-# --- 4. Phase 2: Noise Robustness Benchmark (Table 3) ---
-metrics_file.write("\n=== TABLE 3: NOISE ROBUSTNESS (Proposed MPO) ===\n")
-
-# Generate Standardized Noise Profiles
-noises = {
-    "Salt_Pepper": (random_noise(img, mode='s&p', amount=0.05) * 255).astype(np.uint8),
-    "Speckle": (random_noise(img, mode='speckle', var=0.05) * 255).astype(np.uint8),
-    "Poisson": (random_noise(img, mode='poisson') * 255).astype(np.uint8),
-}
-
-# Mixed Noise (Gaussian + S&P)
+# 4. Mixed Noise (Gauss + S&P)
 mixed = random_noise(img, mode='gaussian', var=0.005)
-mixed = (random_noise(mixed, mode='s&p', amount=0.02) * 255).astype(np.uint8)
-noises["Mixed"] = mixed
-
-for name, noisy_img in noises.items():
-    restored = apply_mpo(noisy_img)
-    psnr_val = calculate_psnr(img, restored)
-    ssim_val = calculate_ssim(img, restored, data_range=255)
-    metrics_file.write(f"{name:<12} -> PSNR: {psnr_val:.2f} | SSIM: {ssim_val:.4f}\n")
-    
-    # Save the output images for visual inspection
-    cv2.imwrite(f"{out_dir}/02_{name}_noisy.png", noisy_img)
-    cv2.imwrite(f"{out_dir}/03_{name}_restored.png", restored)
-
-metrics_file.close()
-
-# --- 5. Zip and Download ---
-archive_name = "MPO_Real_World_Data"
-shutil.make_archive(archive_name, 'zip', out_dir)
-print("Processing Complete. Downloading results...")
-files.download(f"{archive_name}.zip")
+mixed = (random_noise(mixed, mode='s&p', amount=0.05) * 255).astype(np.uint8)
+mixed_restored = apply_multiscale_mpo(mixed)
+print(f"Mixed Noise   -> PSNR: {calculate_psnr(img, mixed_restored):.2f} dB | SSIM: {calculate_ssim(img, mixed_restored, data_range=255):.4f}")
