@@ -1,0 +1,111 @@
+import numpy as np
+import cv2
+import matplotlib.pyplot as plt
+from skimage.metrics import peak_signal_noise_ratio as calculate_psnr
+from skimage.metrics import structural_similarity as calculate_ssim
+from skimage.util import random_noise
+import os
+import shutil
+from google.colab import files
+
+# --- Setup Output Directory ---
+output_dir = "mpo_outputs"
+os.makedirs(output_dir, exist_ok=True)
+
+def apply_base_mpo(image, step_size=0.1, iterations=5):
+    """
+    A simplified single-scale MPO forward-Euler step.
+    Using a 3x3 structuring element (matching the hardware line-buffer).
+    """
+    kernel = np.ones((3, 3), np.uint8)
+    evolved = image.copy().astype(np.float32)
+    
+    for _ in range(iterations):
+        # Morphological bounds
+        dilation = cv2.dilate(evolved, kernel)
+        erosion = cv2.erode(evolved, kernel)
+        
+        # Morphological partial derivative
+        morph_grad = dilation - erosion
+        
+        # Forward-Euler update (contracting)
+        evolved = evolved - (step_size * morph_grad)
+        
+    return np.clip(evolved, 0, 255).astype(np.uint8)
+
+def plot_frequency_spectrum(original, noisy, mpo_restored, gaussian_restored, save_path):
+    """
+    Generates 2D FFT magnitude spectrums to visualize frequency attenuation.
+    """
+    images = [original, noisy, mpo_restored, gaussian_restored]
+    titles = ['Original Spectrum', 'Noisy Spectrum', 'MPO Spectrum', 'Gaussian Spectrum']
+    
+    plt.figure(figsize=(16, 4))
+    for i in range(4):
+        # Calculate 2D FFT and shift zero frequency to center
+        f_transform = np.fft.fft2(images[i])
+        f_shift = np.fft.fftshift(f_transform)
+        magnitude_spectrum = 20 * np.log(np.abs(f_shift) + 1)
+        
+        plt.subplot(1, 4, i+1)
+        plt.imshow(magnitude_spectrum, cmap='gray')
+        plt.title(titles[i])
+        plt.axis('off')
+    
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close() # Close to keep the Colab output cell clean
+
+# --- Main Testing Harness ---
+if __name__ == "__main__":
+    
+    # 1. Create a synthetic geometric test image (avoids needing external uploads)
+    img = np.zeros((256, 256), dtype=np.uint8)
+    cv2.rectangle(img, (50, 50), (200, 200), 255, -1)
+    cv2.circle(img, (128, 128), 40, 128, -1)
+    cv2.imwrite(f"{output_dir}/01_original.png", img)
+
+    # 2. Add Noise Profiles
+    img_sp_noise = (random_noise(img, mode='s&p', amount=0.05) * 255).astype(np.uint8)
+    cv2.imwrite(f"{output_dir}/02_noisy_sp.png", img_sp_noise)
+
+    # 3. Apply Filters to the noisy image
+    mpo_restored = apply_base_mpo(img_sp_noise, step_size=0.15, iterations=3)
+    median_restored = cv2.medianBlur(img_sp_noise, 3)
+    gaussian_restored = cv2.GaussianBlur(img_sp_noise, (3, 3), 0)
+    bilateral_restored = cv2.bilateralFilter(img_sp_noise, 9, 75, 75)
+
+    # Save restored images
+    cv2.imwrite(f"{output_dir}/03_mpo_restored.png", mpo_restored)
+    cv2.imwrite(f"{output_dir}/04_median_restored.png", median_restored)
+    cv2.imwrite(f"{output_dir}/05_gaussian_restored.png", gaussian_restored)
+    cv2.imwrite(f"{output_dir}/06_bilateral_restored.png", bilateral_restored)
+
+    # 4. Calculate Metrics (PSNR & SSIM) and save to text file
+    filters = {
+        "MPO": mpo_restored,
+        "Median_3x3": median_restored,
+        "Gaussian_3x3": gaussian_restored,
+        "Bilateral": bilateral_restored
+    }
+
+    print("--- Quantitative Benchmarks (Salt & Pepper Noise) ---")
+    with open(f"{output_dir}/00_metrics.txt", "w") as f:
+        f.write("--- Quantitative Benchmarks (Salt & Pepper Noise) ---\n")
+        for name, result in filters.items():
+            psnr_val = calculate_psnr(img, result)
+            ssim_val = calculate_ssim(img, result, data_range=result.max() - result.min())
+            line = f"{name:>15} | PSNR: {psnr_val:.2f} dB | SSIM: {ssim_val:.4f}"
+            print(line)
+            f.write(line + "\n")
+
+    # 5. Generate Spectral Analysis Plot
+    plot_frequency_spectrum(img, img_sp_noise, mpo_restored, gaussian_restored, f"{output_dir}/07_spectral_comparison.pdf")
+
+    # 6. Zip the output directory and trigger Colab download
+    archive_name = "mpo_results"
+    shutil.make_archive(archive_name, 'zip', output_dir)
+    print(f"\nProcessing complete. Triggering download for {archive_name}.zip...")
+    
+    # This will prompt your browser to save the file
+    files.download(f"{archive_name}.zip")
