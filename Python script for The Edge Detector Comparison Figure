@@ -1,0 +1,59 @@
+import cv2
+import numpy as np
+from skimage.util import random_noise
+import os
+import shutil
+from google.colab import files
+
+# --- Setup Output Directory ---
+output_dir = "mpo_edge_results"
+os.makedirs(output_dir, exist_ok=True)
+
+# --- 1. Create a Synthetic Geometric Test Image ---
+# Using sharp rectangles and circles to clearly show how Canny rounds corners 
+# and how MPO preserves them.
+img = np.zeros((300, 300), dtype=np.uint8)
+cv2.rectangle(img, (50, 50), (150, 150), 255, -1)  # Sharp corner test
+cv2.circle(img, (200, 200), 50, 128, -1)           # Curve test
+cv2.rectangle(img, (180, 50), (250, 100), 200, -1) # Another sharp edge
+
+# --- 2. Add Stochastic Noise ---
+# Simulating isolated perturbations and sensor variance
+img_noisy = random_noise(img, mode='s&p', amount=0.03)
+img_noisy = random_noise(img_noisy, mode='gaussian', var=0.005)
+img_noisy = (img_noisy * 255).astype(np.uint8)
+
+# --- 3. Compute Sobel Edge Map ---
+# Validating the claim that Sobel is highly sensitive to noise
+sobelx = cv2.Sobel(img_noisy, cv2.CV_64F, 1, 0, ksize=3)
+sobely = cv2.Sobel(img_noisy, cv2.CV_64F, 0, 1, ksize=3)
+sobel_mag = cv2.magnitude(sobelx, sobely)
+sobel_normalized = cv2.normalize(sobel_mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+
+# --- 4. Compute Canny Edge Map ---
+# Demonstrating the rounding effect of Canny's internal Gaussian pre-filter
+canny_edges = cv2.Canny(img_noisy, threshold1=100, threshold2=200)
+
+# --- 5. Compute Proposed MPO Edge Map ---
+# Evaluating the strict extrema to preserve sharp 90-degree corners
+kernel = np.ones((3, 3), np.uint8)
+dilation = cv2.dilate(img_noisy, kernel)
+erosion = cv2.erode(img_noisy, kernel)
+mpo_edges = cv2.subtract(dilation, erosion)
+
+# Clean up isolated noise spikes to show the clean structural boundary
+_, mpo_edges_clean = cv2.threshold(mpo_edges, 150, 255, cv2.THRESH_BINARY)
+
+# --- 6. Save the outputs ---
+cv2.imwrite(os.path.join(output_dir, "edge_01_original.png"), img_noisy)
+cv2.imwrite(os.path.join(output_dir, "edge_02_sobel.png"), sobel_normalized)
+cv2.imwrite(os.path.join(output_dir, "edge_03_canny.png"), canny_edges)
+cv2.imwrite(os.path.join(output_dir, "edge_04_mpo.png"), mpo_edges_clean)
+
+# --- 7. Zip the directory and trigger download ---
+archive_name = "mpo_edge_results"
+shutil.make_archive(archive_name, 'zip', output_dir)
+print(f"Processing complete. Triggering download for {archive_name}.zip...")
+
+# This prompts the browser to save the file
+files.download(f"{archive_name}.zip")
