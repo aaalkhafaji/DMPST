@@ -1,0 +1,126 @@
+import numpy as np
+import cv2
+from skimage import data
+from skimage.metrics import peak_signal_noise_ratio as calculate_psnr
+from skimage.metrics import structural_similarity as calculate_ssim
+from skimage.util import random_noise
+import os
+import shutil
+from google.colab import files
+
+# --- 0. Setup Directories ---
+out_dir = "mpo_ablation_data"
+os.makedirs(out_dir, exist_ok=True)
+
+# --- 1. Edge Preservation Index (EPI) Function ---
+def calculate_epi(orig, restored):
+    """Calculates EPI based on spatial gradient magnitudes (Eq 13)."""
+    # Gradients of Original
+    sobelx_o = cv2.Sobel(orig, cv2.CV_64F, 1, 0, ksize=3)
+    sobely_o = cv2.Sobel(orig, cv2.CV_64F, 0, 1, ksize=3)
+    grad_orig = np.sqrt(sobelx_o**2 + sobely_o**2)
+    
+    # Gradients of Restored
+    sobelx_r = cv2.Sobel(restored, cv2.CV_64F, 1, 0, ksize=3)
+    sobely_r = cv2.Sobel(restored, cv2.CV_64F, 0, 1, ksize=3)
+    grad_rest = np.sqrt(sobelx_r**2 + sobely_r**2)
+    
+    sum_orig = np.sum(grad_orig)
+    sum_rest = np.sum(grad_rest)
+    
+    return sum_rest / sum_orig if sum_orig > 0 else 1.0
+
+# --- 2. MPO Ablation Configurations ---
+
+def base_mpo(img, iters=5, step=0.15):
+    """Open-loop, fixed step size. Susceptible to global darkening."""
+    kernel = np.ones((3, 3), np.uint8)
+    ev = img.copy().astype(np.float32)
+    for _ in range(iters):
+        mg = cv2.dilate(ev, kernel) - cv2.erode(ev, kernel)
+        ev = ev - step * mg
+    return np.clip(ev, 0, 255).astype(np.uint8)
+
+def adaptive_mpo(img, iters=5, l0=0.5, beta=0.05):
+    """Eq 18 from original text: Adapts step size based on Morph Grad E(x)."""
+    kernel = np.ones((3, 3), np.uint8)
+    ev = img.copy().astype(np.float32)
+    for _ in range(iters):
+        mg = cv2.dilate(ev, kernel) - cv2.erode(ev, kernel)
+        step = l0 / (1.0 + beta * mg)
+        ev = ev - step * mg
+    return np.clip(ev, 0, 255).astype(np.uint8)
+
+def mrfe_mpo(img, iters=5, l0=0.8, beta=0.1):
+    """NEW: Morphological Residual Feedback Evolution. Tracks iteration delta."""
+    kernel = np.ones((3, 3), np.uint8)
+    ev = img.copy().astype(np.float32)
+    prev = ev.copy()
+    for i in range(iters):
+        mg = cv2.dilate(ev, kernel) - cv2.erode(ev, kernel)
+        rn = np.abs(ev - prev) if i > 0 else mg # Residual Energy R_n(x)
+        prev = ev.copy()
+        
+        step = l0 / (1.0 + beta * rn)
+        ev = ev - step * mg
+    return np.clip(ev, 0, 255).astype(np.uint8)
+
+def multiscale_mpo(img):
+    """Uses rank-baseline to prevent edge paradox."""
+    base = cv2.medianBlur(img, 3)
+    kernel = np.ones((3, 3), np.uint8)
+    mg = cv2.dilate(base, kernel) - cv2.erode(base, kernel)
+    alpha = np.clip((mg.astype(np.float32) / 255.0) * 1.5, 0, 1)
+    ev = base.astype(np.float32) * (1 - alpha) + img.astype(np.float32) * alpha
+    return cv2.medianBlur(ev.astype(np.uint8), 3)
+
+def full_mpo(img, iters=3):
+    """Combines MRFE into the Multi-Scale baseline for maximum fidelity."""
+    base = mrfe_mpo(cv2.medianBlur(img, 3), iters=iters)
+    kernel = np.ones((3, 3), np.uint8)
+    mg = cv2.dilate(base, kernel) - cv2.erode(base, kernel)
+    alpha = np.clip((mg.astype(np.float32) / 255.0) * 1.5, 0, 1)
+    ev = base.astype(np.float32) * (1 - alpha) + img.astype(np.float32) * alpha
+    return cv2.medianBlur(ev.astype(np.uint8), 3)
+
+# --- 3. Execution & Metrics ---
+img = data.camera()
+# We use Mixed Noise as the hardest test for the ablation study
+noisy = random_noise(img, mode='gaussian', var=0.005)
+noisy = (random_noise(noisy, mode='s&p', amount=0.05) * 255).astype(np.uint8)
+
+cv2.imwrite(f"{out_dir}/00_orig.png", img)
+cv2.imwrite(f"{out_dir}/01_noisy.png", noisy)
+
+print("=== TABLE: EPI BENCHMARK ===")
+filters = {
+    "Gaussian": cv2.GaussianBlur(noisy, (3,3), 0),
+    "Median": cv2.medianBlur(noisy, 3),
+    "Bilateral": cv2.bilateralFilter(noisy, 9, 75, 75),
+    "Proposed MPO (Full)": full_mpo(noisy)
+}
+for name, res in filters.items():
+    p = calculate_psnr(img, res)
+    s = calculate_ssim(img, res, data_range=255)
+    e = calculate_epi(img, res)
+    print(f"{name:<20} | PSNR: {p:.2f} | SSIM: {s:.4f} | EPI: {e:.4f}")
+
+print("\n=== TABLE: ABLATION STUDY ===")
+ablations = {
+    "Base MPO": base_mpo(noisy),
+    "MPO + Adaptive": adaptive_mpo(noisy),
+    "MPO + MRFE": mrfe_mpo(noisy),
+    "MPO + Multi-Scale": multiscale_mpo(noisy),
+    "Full MPO Framework": full_mpo(noisy)
+}
+for name, res in ablations.items():
+    p = calculate_psnr(img, res)
+    s = calculate_ssim(img, res, data_range=255)
+    e = calculate_epi(img, res)
+    cv2.imwrite(f"{out_dir}/02_Ablation_{name.replace(' ', '_')}.png", res)
+    print(f"{name:<20} | PSNR: {p:.2f} | SSIM: {s:.4f} | EPI: {e:.4f}")
+
+# Zip and download
+shutil.make_archive("MPO_Ablation_Results", 'zip', out_dir)
+print("\nDownloading image files...")
+files.download("MPO_Ablation_Results.zip")
